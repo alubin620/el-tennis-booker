@@ -296,20 +296,52 @@ async function typeAndAddPlayer(page) {
 }
 
 async function clickEnabledNext(page) {
-  const buttons = page.locator(".content.active button").filter({ hasText: /^\s*next\s*$/i });
+  await closePlayerSearch(page);
   const deadline = Date.now() + 8000;
-  let target = null;
+  let sawNext = false;
   while (Date.now() < deadline) {
-    target = await firstVisible(buttons);
-    if (target) {
-      const blocked = await target.evaluate((element) => element.classList.contains("disabled")).catch(() => false);
-      if (!blocked) break;
+    const state = await clickActiveNext(page, { allowDisabled: false });
+    if (state === "clicked") {
+      log("checkout: continued with Next");
+      return;
     }
+    if (state === "disabled") sawNext = true;
     await page.waitForTimeout(200);
   }
-  if (!target) throw new Error("Could not find Next. Nothing was booked.");
-  await target.click({ force: true });
-  log("checkout: continued with Next");
+  if (sawNext && (await clickActiveNext(page, { allowDisabled: true })) === "clicked") {
+    log("checkout: continued with Next");
+    return;
+  }
+  throw new Error("Could not find Next. Nothing was booked.");
+}
+
+async function closePlayerSearch(page) {
+  await page
+    .evaluate(() => {
+      const jquery = window.jQuery;
+      if (!jquery) return;
+      for (const modal of document.querySelectorAll(".ui.modal.PlayerSearchListModal")) {
+        const node = jquery(modal);
+        if (node.hasClass("active") || node.hasClass("visible")) node.modal("hide");
+      }
+    })
+    .catch(() => {});
+  await page.waitForTimeout(300);
+}
+
+async function clickActiveNext(page, { allowDisabled }) {
+  return page.evaluate((allowDisabledClick) => {
+    const active = document.querySelector(".content.active");
+    if (!active) return "missing";
+    const button = [...active.querySelectorAll("button")].find((node) => {
+      const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+      return /^next$/i.test(text) && node.getClientRects().length > 0;
+    });
+    if (!button) return "missing";
+    if (!allowDisabledClick && button.classList.contains("disabled")) return "disabled";
+    button.click();
+    return "clicked";
+  }, allowDisabled);
 }
 
 async function waitForBookPage(page) {
