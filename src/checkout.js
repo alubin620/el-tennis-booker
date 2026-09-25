@@ -75,10 +75,11 @@ async function driveToCheckout(page, { date, surface, seconds, label }) {
   await page.waitForTimeout(800);
 
   await acceptWaiverIfPresent(page);
+  await clickEnabledNext(page);
   await selectTwoUsers(page);
   await openAddUsersSearch(page);
   await typeAndAddPlayer(page);
-  await clickNext(page);
+  await clickEnabledNext(page);
   await waitForBookPage(page);
 }
 
@@ -251,15 +252,22 @@ async function acceptWaiverIfPresent(page) {
 }
 
 async function selectTwoUsers(page) {
-  const choice = await nearestControl(page, /^2$/, /number of users/i);
-  if (!choice) throw new Error("Could not select 2 users. Nothing was booked.");
-  await choice.click();
+  const heading = page.getByRole("heading", { name: /^number of /i });
+  try {
+    await heading.first().waitFor({ state: "visible", timeout: 8000 });
+  } catch {
+    throw new Error("Could not select 2 users. Nothing was booked.");
+  }
+  const choice = page.locator("button.ButtonOption", { hasText: /^2$/ });
+  const target = await firstVisible(choice);
+  if (!target) throw new Error("Could not select 2 users. Nothing was booked.");
+  await target.click();
   log("checkout: selected two users");
   await page.waitForTimeout(400);
 }
 
 async function openAddUsersSearch(page) {
-  const button = page.getByRole("button", { name: /^add users?$/i }).or(page.getByRole("link", { name: /^add users?$/i }));
+  const button = page.getByRole("button", { name: /^\s*add users?\s*$/i }).or(page.locator("button.ui.button", { hasText: /^\s*add users?\s*$/i }));
   const target = await firstVisible(button);
   if (!target) throw new Error("Could not find Add users. Nothing was booked.");
   await target.click();
@@ -287,17 +295,24 @@ async function typeAndAddPlayer(page) {
   log("checkout: added second player");
 }
 
-async function clickNext(page) {
-  const next = await firstVisible(page.getByRole("button", { name: /^next$/i }));
-  if (!next) throw new Error("Could not find Next. Nothing was booked.");
-  await next.click();
-  log("checkout: continued with Next");
+async function clickEnabledNext(page) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const next = await firstEnabled(page.getByRole("button", { name: /^\s*next\s*$/i }));
+    if (next) {
+      await next.click();
+      log("checkout: continued with Next");
+      return;
+    }
+    await page.waitForTimeout(200);
+  }
+  throw new Error("Could not find Next. Nothing was booked.");
 }
 
 async function waitForBookPage(page) {
-  const book = page.getByRole("button", { name: /^(book|book now)$/i }).filter({ visible: true });
+  const book = page.locator("button.ui.button, div.ui.button").filter({ hasText: /^\s*book\s*$/i });
   try {
-    await book.first().waitFor({ state: "visible", timeout: 15000 });
+    await book.filter({ visible: true }).first().waitFor({ state: "visible", timeout: 15000 });
   } catch {
     throw new Error("The Book page did not open. Nothing was booked.");
   }
@@ -306,36 +321,13 @@ async function waitForBookPage(page) {
 
 function searchField(page) {
   return page
-    .getByPlaceholder(/search|user|player|name or email/i)
+    .getByPlaceholder(/search for|search|user|player|name or email/i)
     .or(page.getByRole("textbox", { name: /search|add user|user name|player/i }))
     .or(page.getByRole("searchbox"));
 }
 
 function visibleSearchField(page) {
   return searchField(page).filter({ visible: true });
-}
-
-async function nearestControl(page, name, section) {
-  const controls = page.getByRole("button", { name }).or(page.getByRole("radio", { name })).or(page.getByText(name));
-  const count = await controls.count();
-  let best = null;
-  for (let index = 0; index < count; index += 1) {
-    const control = controls.nth(index);
-    if (!(await control.isVisible().catch(() => false))) continue;
-    const near = await control.evaluate((element, patternSource) => {
-      const pattern = new RegExp(patternSource, "i");
-      let scope = element;
-      for (let depth = 0; depth < 8 && scope; depth += 1) {
-        const text = (scope.innerText || "").replace(/\s+/g, " ").trim();
-        if (pattern.test(text)) return text.length;
-        scope = scope.parentElement;
-      }
-      return null;
-    }, section.source);
-    if (near == null) continue;
-    if (!best || near < best.near) best = { control, near };
-  }
-  return best?.control ?? null;
 }
 
 async function addButtonForPlayer(page) {
@@ -391,11 +383,12 @@ async function nameOnPlayerList(page) {
       }
       return false;
     };
-    return [...document.querySelectorAll("li, p, span, div, a")].some((node) => {
+    return [...document.querySelectorAll("h1, li, p, span, div, a")].some((node) => {
       if (!visible(node) || inSearchResult(node)) return false;
+      if (node.closest(".PlayerSearchList, .PlayerSearchListModal, .ui.modal")) return false;
       if (node.querySelector("input, textarea, [role='searchbox']")) return false;
       const text = textOf(node);
-      return text.length <= 80 && text.toLowerCase().includes(normalized);
+      return text.length <= 120 && text.toLowerCase().includes(normalized);
     });
   }, SECOND_PLAYER);
 }
@@ -405,6 +398,24 @@ async function firstVisible(locator) {
   for (let index = 0; index < count; index += 1) {
     const item = locator.nth(index);
     if (await item.isVisible().catch(() => false)) return item;
+  }
+  return null;
+}
+
+async function firstEnabled(locator) {
+  const count = await locator.count();
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index);
+    if (!(await item.isVisible().catch(() => false))) continue;
+    const disabled = await item
+      .evaluate(
+        (element) =>
+          element.classList.contains("disabled") ||
+          element.hasAttribute("disabled") ||
+          element.getAttribute("aria-disabled") === "true",
+      )
+      .catch(() => true);
+    if (!disabled) return item;
   }
   return null;
 }
