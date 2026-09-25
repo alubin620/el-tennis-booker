@@ -133,6 +133,7 @@ function page(bookingUrl, message, result) {
     .surface { margin: 0.7rem 0 0.25rem; }
     .slots { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.2rem 0 0.6rem; }
     .slot { margin-top: 0; }
+    .booked { display: inline-block; margin-top: 0; padding: 0.55rem 0.9rem; background: #f3d2a6; color: #8a3b00; border: 1px solid #e09a3a; border-radius: 4px; }
   </style>
 </head>
 <body>
@@ -157,7 +158,7 @@ function page(bookingUrl, message, result) {
     for (const button of document.querySelectorAll(".slot")) {
       button.addEventListener("click", async () => {
         button.disabled = true;
-        button.textContent = "Opening checkout…";
+        button.textContent = "Adding player…";
         await postAndReplace({
           action: "checkout",
           bookingUrl: document.getElementById("bookingUrl").value,
@@ -190,9 +191,10 @@ function renderTimes(result) {
         .map((surface) => {
           const slots = surface.slots.length
             ? `<div class="slots">${surface.slots
-                .map(
-                  (slot) =>
-                    `<button type="button" class="slot" data-date="${escapeHtml(day.date)}" data-surface="${escapeHtml(surface.surface)}" data-seconds="${Number(slot.seconds)}" data-label="${escapeHtml(slot.label)}">${escapeHtml(slot.label)}</button>`,
+                .map((slot) =>
+                  slot.booked
+                    ? `<span class="booked">${escapeHtml(slot.label)}</span>`
+                    : `<button type="button" class="slot" data-date="${escapeHtml(day.date)}" data-surface="${escapeHtml(surface.surface)}" data-seconds="${Number(slot.seconds)}" data-label="${escapeHtml(slot.label)}">${escapeHtml(slot.label)}</button>`,
                 )
                 .join("")}</div>`
             : `<p>none open</p>`;
@@ -203,7 +205,7 @@ function renderTimes(result) {
     })
     .join("");
   const next = result.nextOpen ? `<p>Next booking window opens ${escapeHtml(result.nextOpen)}.</p>` : "";
-  return `<h2>Open times</h2><p>Click one time to open checkout with Eric Placeholder as the second player. Nothing is booked.</p><p>Facility ${escapeHtml(result.facilityId)}. Times are ${escapeHtml(result.timeZone)}.</p>${next}${days}`;
+  return `<h2>Open times</h2><p>Click one open time to set 2 players and add Eric Placeholder. Booked times stay on the list and cannot be clicked. Nothing is booked.</p><p>Facility ${escapeHtml(result.facilityId)}. Times are ${escapeHtml(result.timeZone)}.</p>${next}${days}`;
 }
 
 function escapeHtml(value) {

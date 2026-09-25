@@ -1,7 +1,7 @@
 import { openSession, ensureLoggedIn, readFacility } from "./session.js";
 import { listCourtTypes, listHours } from "./api.js";
 import { calendarDates, dateToUnix, normalizeHours, timeStepFrom } from "./match.js";
-import { labelForSlot, readTimeButtonTexts, selectDate, selectSurface } from "./checkout.js";
+import { buttonSlots, labelForSlot, readTimeButtonTexts, selectDate, selectSurface } from "./checkout.js";
 import { log } from "./logger.js";
 import { materializeStorageFromEnv } from "./storage-state.js";
 
@@ -89,11 +89,34 @@ export async function lookupAvailability(bookingUrl) {
 }
 
 export function openSlots(hours, step = 3600, buttonTexts = []) {
+  const fromPage = buttonSlots(buttonTexts);
+  if (fromPage.length) {
+    const covered = new Set(fromPage.map((slot) => slot.seconds));
+    const listed = fromPage.map((slot) => ({
+      seconds: slot.seconds,
+      endSeconds: slot.endSeconds,
+      label: slot.label,
+      booked: slot.booked,
+    }));
+    for (const hour of hours) {
+      if (!hour.available || covered.has(hour.seconds)) continue;
+      const chosen = labelForSlot(hour.seconds, step, [], hour.label);
+      if (!chosen.label) continue;
+      listed.push({
+        seconds: hour.seconds,
+        endSeconds: chosen.endSeconds,
+        label: chosen.label,
+        booked: false,
+      });
+    }
+    return listed.sort((a, b) => a.seconds - b.seconds || Number(a.booked) - Number(b.booked));
+  }
+
   return hours
     .filter((hour) => hour.available)
     .map((hour) => {
-      const chosen = labelForSlot(hour.seconds, step, buttonTexts, hour.label);
-      return { seconds: hour.seconds, endSeconds: chosen.endSeconds, label: chosen.label };
+      const chosen = labelForSlot(hour.seconds, step, [], hour.label);
+      return { seconds: hour.seconds, endSeconds: chosen.endSeconds, label: chosen.label, booked: false };
     })
     .sort((a, b) => a.seconds - b.seconds);
 }

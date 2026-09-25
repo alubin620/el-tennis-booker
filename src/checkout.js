@@ -61,8 +61,8 @@ export async function previewCheckout({ bookingUrl, date, surface, seconds, labe
       seconds: start,
       label: String(label || "").trim(),
     });
-    log("checkout: stopped on the checkout page without booking");
-    return `Checkout is open and nothing was booked. ${SECOND_PLAYER} was added as the second player. Open the live view to see it. Do not click Book or Pay.`;
+    log("checkout: stopped after adding the second player");
+    return `${SECOND_PLAYER} was added as the second player. Nothing was booked. Open the live view to see it. Do not click Book or Pay.`;
   } catch (error) {
     await clearAndScreenshot(session.page);
     throw error;
@@ -75,72 +75,83 @@ async function driveToCheckout(page, { date, surface, seconds, label }) {
   await selectTime(page, label, seconds);
   await page.waitForTimeout(800);
 
-  let playerReady = false;
   for (let step = 0; step < 6; step += 1) {
     await acceptWaiverIfPresent(page);
     await ensureTwoPlayers(page);
     const added = await addSecondPlayer(page);
-    if (added === "added" || added === "present") playerReady = true;
-    if (playerReady && (await onCheckout(page))) break;
-    const moved = await clickProgressButton(page, { allowCheckout: playerReady });
-    if (!moved && added === "missing" && !playerReady) {
+    if (added === "added" || added === "present") break;
+    const moved = await clickAddPlayerStep(page);
+    if (!moved && added === "missing") {
       throw new Error("Could not find the add-player search. Nothing was booked.");
     }
-    if (!moved && playerReady && (await onCheckout(page))) break;
-    if (!moved && !playerReady) {
+    if (!moved) {
       throw new Error(`Could not add ${SECOND_PLAYER}. Nothing was booked.`);
     }
     await page.waitForTimeout(800);
   }
 
-  const text = await bodyText(page);
-  if (!text.includes(SECOND_PLAYER)) {
-    throw new Error(`Checkout opened without ${SECOND_PLAYER}. Nothing was booked.`);
-  }
-  if (!(await onCheckout(page))) {
-    throw new Error("Could not reach the checkout page. Nothing was booked.");
+  if (!(await bodyText(page)).includes(SECOND_PLAYER)) {
+    throw new Error(`Could not add ${SECOND_PLAYER}. Nothing was booked.`);
   }
 }
 
-export function clocksFromLabel(text) {
-  const clocks = [];
-  const source = String(text || "");
-  const pattern = /\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b|\b([01]?\d|2[0-3]):([0-5]\d)\b/gi;
-  for (const match of source.matchAll(pattern)) {
-    if (match[3]) {
-      let hour = Number(match[1]);
-      const minutes = Number(match[2] || 0);
-      const meridiem = match[3].replaceAll(".", "").toLowerCase();
-      if (hour > 12 || minutes > 59) continue;
-      if (meridiem.startsWith("p") && hour < 12) hour += 12;
-      if (meridiem.startsWith("a") && hour === 12) hour = 0;
-      clocks.push(hour * 3600 + minutes * 60);
-      continue;
-    }
-    clocks.push(Number(match[4]) * 3600 + Number(match[5]) * 60);
+const SLOT_RANGE =
+  /^(\d{1,2})(?::(\d{2}))?(?:\s*(a\.?m\.?|p\.?m\.?))?\s*[-–—]\s*(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)(?:\s*\+)?$/i;
+
+export function parseSlotLabel(text) {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  const match = source.match(SLOT_RANGE);
+  if (!match) return null;
+  const startMinute = Number(match[2] || 0);
+  const endMinute = Number(match[5] || 0);
+  const startHour = Number(match[1]);
+  const endHour = Number(match[4]);
+  if (startHour > 12 || endHour > 12 || startMinute > 59 || endMinute > 59) return null;
+  const endMeridiem = meridiemOf(match[6]);
+  const endSeconds = clockSeconds(endHour, endMinute, endMeridiem);
+  const startMeridiem = match[3] ? meridiemOf(match[3]) : null;
+  let seconds = clockSeconds(startHour, startMinute, startMeridiem || endMeridiem);
+  if (!startMeridiem && seconds >= endSeconds) {
+    seconds = clockSeconds(startHour, startMinute, endMeridiem === "am" ? "pm" : "am");
   }
-  return clocks;
+  if (seconds >= endSeconds) return null;
+  return {
+    label: source,
+    seconds,
+    endSeconds,
+    booked: /\+\s*$/.test(source),
+  };
+}
+
+export function clocksFromLabel(text) {
+  const slot = parseSlotLabel(text);
+  return slot ? [slot.seconds, slot.endSeconds] : [];
+}
+
+export function buttonSlots(buttonTexts) {
+  const slots = [];
+  const seen = new Set();
+  for (const raw of buttonTexts) {
+    const slot = parseSlotLabel(raw);
+    if (!slot) continue;
+    const key = `${slot.seconds}:${slot.endSeconds}:${slot.booked}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    slots.push(slot);
+  }
+  return slots;
 }
 
 export function labelForSlot(seconds, step, buttonTexts, apiLabel) {
   const end = seconds + step;
   let best = null;
-  for (const raw of buttonTexts) {
-    const text = String(raw || "").replace(/\s+/g, " ").trim();
-    const clocks = clocksFromLabel(text);
-    if (!clocks.length || clocks[0] !== seconds) continue;
-    if (clocks.length >= 2 && clocks[1] !== end) continue;
-    const score = clocks.length * 1000 + text.length;
-    if (!best || score < best.score) best = { text, clocks, score };
+  for (const slot of buttonSlots(buttonTexts)) {
+    if (slot.booked || slot.seconds !== seconds || slot.endSeconds !== end) continue;
+    if (!best || slot.label.length < best.label.length) best = slot;
   }
-  if (best) return { label: best.text, endSeconds: best.clocks[1] ?? end };
-
+  if (best) return { label: best.label, endSeconds: best.endSeconds, booked: false };
   const fallback = String(apiLabel || "").replace(/\s+/g, " ").trim();
-  const fallbackClocks = clocksFromLabel(fallback);
-  if (fallback && fallbackClocks[0] === seconds) {
-    return { label: fallback, endSeconds: fallbackClocks[1] ?? end };
-  }
-  return { label: rangeLabel12(seconds, end), endSeconds: end };
+  return { label: fallback, endSeconds: end, booked: false };
 }
 
 export async function readTimeButtonTexts(page) {
@@ -151,7 +162,7 @@ export async function readTimeButtonTexts(page) {
     const node = nodes.nth(index);
     if (!(await node.isVisible().catch(() => false))) continue;
     const text = (await node.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-    if (text && clocksFromLabel(text).length) texts.push(text);
+    if (parseSlotLabel(text)) texts.push(text);
   }
   return texts;
 }
@@ -215,9 +226,9 @@ export async function selectSurface(page, surface) {
 }
 
 async function selectTime(page, label, seconds) {
-  const wanted = clocksFromLabel(label);
-  const start = wanted[0] ?? seconds;
-  const end = wanted[1] ?? null;
+  const wanted = parseSlotLabel(label);
+  const start = wanted?.seconds ?? seconds;
+  const end = wanted?.endSeconds ?? null;
   const wantedText = normalizeText(label);
   const nodes = page.locator("button, a, [role='button'], li");
   const count = await nodes.count();
@@ -226,19 +237,15 @@ async function selectTime(page, label, seconds) {
     const node = nodes.nth(index);
     if (!(await node.isVisible().catch(() => false))) continue;
     const text = normalizeText(await node.innerText().catch(() => ""));
-    if (!text || isForbidden(text)) continue;
-    if (wantedText && text === wantedText) {
-      best = { node, score: -1 };
-      break;
-    }
-    const clocks = clocksFromLabel(text);
-    if (!clocks.length || clocks[0] !== start) continue;
-    if (end != null && clocks.length >= 2 && clocks[1] !== end) continue;
-    const score = (end != null && clocks[1] === end ? 0 : 100) + text.length;
+    if (!text || isForbidden(text) || /\+\s*$/.test(text)) continue;
+    const slot = parseSlotLabel(text);
+    if (!slot || slot.booked || slot.seconds !== start) continue;
+    if (end != null && slot.endSeconds !== end) continue;
+    const score = wantedText && text === wantedText ? -1 : text.length;
     if (!best || score < best.score) best = { node, text, score };
   }
   if (!best) {
-    const shown = label || rangeLabel12(start, start);
+    const shown = label || rangeLabel12(start, end ?? start);
     throw new Error(`Could not find ${shown} on the booking page. Nothing was booked.`);
   }
   await best.node.click();
@@ -312,10 +319,8 @@ async function addSecondPlayer(page) {
   return "added";
 }
 
-async function clickProgressButton(page, { allowCheckout }) {
-  const names = allowCheckout
-    ? [/^proceed to checkout$/i, /^checkout$/i, /^confirm players$/i, /^continue$/i, /^next$/i, /^add players$/i]
-    : [/^continue$/i, /^next$/i, /^add players$/i];
+async function clickAddPlayerStep(page) {
+  const names = [/^add players?$/i, /^add a player$/i, /^continue$/i, /^next$/i];
   const buttons = page.getByRole("button");
   const count = await buttons.count();
   let best = null;
@@ -332,12 +337,6 @@ async function clickProgressButton(page, { allowCheckout }) {
   await best.button.click();
   log(`checkout: continued with "${best.name}"`);
   return true;
-}
-
-async function onCheckout(page) {
-  const text = await bodyText(page);
-  if (/payment method|credit card|club credits|debit card|pay later/i.test(text)) return true;
-  return (await page.getByRole("heading", { name: /checkout|payment/i }).count()) > 0;
 }
 
 function isForbidden(name) {
@@ -361,6 +360,17 @@ function dateHints(date) {
     weekdayLong: new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long" }).format(utc),
     monthName: new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "long" }).format(utc),
   };
+}
+
+function meridiemOf(value) {
+  return String(value || "").replaceAll(".", "").toLowerCase().startsWith("p") ? "pm" : "am";
+}
+
+function clockSeconds(hour, minutes, meridiem) {
+  let clock = hour;
+  if (meridiem === "pm" && clock < 12) clock += 12;
+  if (meridiem === "am" && clock === 12) clock = 0;
+  return clock * 3600 + minutes * 60;
 }
 
 function rangeLabel12(start, end) {
