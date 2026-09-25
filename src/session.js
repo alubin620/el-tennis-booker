@@ -13,7 +13,7 @@ export async function openSession(config, { fresh = false } = {}) {
   log(`openSession: launching chromium headless=${config.headless} reuseStorage=${hasStorage}`);
   const browser = await chromium.launch({
     headless: config.headless,
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,800"],
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,800","--disable-blink-features=AutomationControlled"],
   });
   const context = await browser.newContext({
     storageState: hasStorage ? STORAGE : undefined,
