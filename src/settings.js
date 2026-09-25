@@ -158,7 +158,7 @@ function page(bookingUrl, message, result) {
     for (const button of document.querySelectorAll(".slot")) {
       button.addEventListener("click", async () => {
         button.disabled = true;
-        button.textContent = "Adding player…";
+        button.textContent = "Opening Book page…";
         await postAndReplace({
           action: "checkout",
           bookingUrl: document.getElementById("bookingUrl").value,
@@ -205,7 +205,7 @@ function renderTimes(result) {
     })
     .join("");
   const next = result.nextOpen ? `<p>Next booking window opens ${escapeHtml(result.nextOpen)}.</p>` : "";
-  return `<h2>Open times</h2><p>Click one open time to set 2 players and add Eric Placeholder. Booked times stay on the list and cannot be clicked. Nothing is booked.</p><p>Facility ${escapeHtml(result.facilityId)}. Times are ${escapeHtml(result.timeZone)}.</p>${next}${days}`;
+  return `<h2>Open times</h2><p>Click one open time. The browser sets 2 users, adds Eric Placeholder, and leaves the Book page open. Nothing is booked.</p><p>Facility ${escapeHtml(result.facilityId)}. Times are ${escapeHtml(result.timeZone)}.</p>${next}${days}`;
 }
 
 function escapeHtml(value) {

@@ -3,7 +3,6 @@ import { log } from "./logger.js";
 import { materializeStorageFromEnv } from "./storage-state.js";
 
 const SECOND_PLAYER = "Eric Placeholder";
-const NAME_PATTERN = new RegExp(`^${SECOND_PLAYER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
 
 let previewSession = null;
 
@@ -61,8 +60,8 @@ export async function previewCheckout({ bookingUrl, date, surface, seconds, labe
       seconds: start,
       label: String(label || "").trim(),
     });
-    log("checkout: stopped after adding the second player");
-    return `${SECOND_PLAYER} was added as the second player. Nothing was booked. Open the live view to see it. Do not click Book or Pay.`;
+    log("checkout: stopped on the Book page");
+    return "The Book page is open and nothing was booked. Open the live view to see it. Do not click Book or Pay.";
   } catch (error) {
     await clearAndScreenshot(session.page);
     throw error;
@@ -75,24 +74,12 @@ async function driveToCheckout(page, { date, surface, seconds, label }) {
   await selectTime(page, label, seconds);
   await page.waitForTimeout(800);
 
-  for (let step = 0; step < 6; step += 1) {
-    await acceptWaiverIfPresent(page);
-    await ensureTwoPlayers(page);
-    const added = await addSecondPlayer(page);
-    if (added === "added" || added === "present") break;
-    const moved = await clickAddPlayerStep(page);
-    if (!moved && added === "missing") {
-      throw new Error("Could not find the add-player search. Nothing was booked.");
-    }
-    if (!moved) {
-      throw new Error(`Could not add ${SECOND_PLAYER}. Nothing was booked.`);
-    }
-    await page.waitForTimeout(800);
-  }
-
-  if (!(await bodyText(page)).includes(SECOND_PLAYER)) {
-    throw new Error(`Could not add ${SECOND_PLAYER}. Nothing was booked.`);
-  }
+  await acceptWaiverIfPresent(page);
+  await selectTwoUsers(page);
+  await openAddUsersSearch(page);
+  await typeAndAddPlayer(page);
+  await clickNext(page);
+  await waitForBookPage(page);
 }
 
 const SLOT_RANGE =
@@ -263,80 +250,163 @@ async function acceptWaiverIfPresent(page) {
   }
 }
 
-async function ensureTwoPlayers(page) {
-  const doubles = page.getByRole("button", { name: /^doubles$/i }).or(page.getByRole("radio", { name: /doubles/i }));
-  if (await visibleCount(doubles)) {
-    await doubles.first().click();
-    log("checkout: selected two players");
-    return;
-  }
-  const labeled = page.getByLabel(/number of players|^players$/i);
-  if (await visibleCount(labeled)) {
-    const tag = await labeled.first().evaluate((node) => node.tagName.toLowerCase());
-    if (tag === "select") {
-      await labeled.first().selectOption("2");
-      log("checkout: selected two players");
-      return;
-    }
-  }
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const count = readPlayerCount(await bodyText(page));
-    if (count === 2 || (count != null && count > 2)) return;
-    const plus = page.getByRole("button", { name: /increase players|add a player|^\+$/i });
-    if (!(await visibleCount(plus))) return;
-    await plus.first().click();
-    log("checkout: increased player count");
-    await page.waitForTimeout(300);
+async function selectTwoUsers(page) {
+  const choice = await nearestControl(page, /^2$/, /number of users/i);
+  if (!choice) throw new Error("Could not select 2 users. Nothing was booked.");
+  await choice.click();
+  log("checkout: selected two users");
+  await page.waitForTimeout(400);
+}
+
+async function openAddUsersSearch(page) {
+  const button = page.getByRole("button", { name: /^add users?$/i }).or(page.getByRole("link", { name: /^add users?$/i }));
+  const target = await firstVisible(button);
+  if (!target) throw new Error("Could not find Add users. Nothing was booked.");
+  await target.click();
+  log("checkout: opened add users");
+  try {
+    await visibleSearchField(page).first().waitFor({ state: "visible", timeout: 8000 });
+  } catch {
+    throw new Error("Could not find the add-user search. Nothing was booked.");
   }
 }
 
-async function addSecondPlayer(page) {
-  if ((await bodyText(page)).includes(SECOND_PLAYER)) return "present";
-  const box = page
-    .getByPlaceholder(/search|player name|add player|name or email/i)
-    .or(page.getByRole("textbox", { name: /search|add player|player name/i }));
-  if (!(await visibleCount(box))) return "missing";
-
-  const field = box.first();
+async function typeAndAddPlayer(page) {
+  const field = visibleSearchField(page).first();
   await field.click();
   await field.fill("");
   await field.pressSequentially(SECOND_PLAYER, { delay: 40 });
-  const option = page
-    .getByRole("option", { name: NAME_PATTERN })
-    .or(page.locator("[role='listbox']").getByText(NAME_PATTERN))
-    .or(page.locator("li").getByText(NAME_PATTERN));
-  try {
-    await option.first().waitFor({ state: "visible", timeout: 8000 });
-  } catch {
+  const addButton = await addButtonForPlayer(page);
+  if (!addButton) {
     throw new Error(`No PlayByPoint user named ${SECOND_PLAYER} was in the player search. Nothing was booked.`);
   }
-  await option.first().click();
-  await page.waitForTimeout(400);
-  if (!(await bodyText(page)).includes(SECOND_PLAYER)) {
+  await addButton.click();
+  if (!(await waitForPlayerOnList(page))) {
     throw new Error(`Could not add ${SECOND_PLAYER} as the second player. Nothing was booked.`);
   }
   log("checkout: added second player");
-  return "added";
 }
 
-async function clickAddPlayerStep(page) {
-  const names = [/^add players?$/i, /^add a player$/i, /^continue$/i, /^next$/i];
-  const buttons = page.getByRole("button");
-  const count = await buttons.count();
+async function clickNext(page) {
+  const next = await firstVisible(page.getByRole("button", { name: /^next$/i }));
+  if (!next) throw new Error("Could not find Next. Nothing was booked.");
+  await next.click();
+  log("checkout: continued with Next");
+}
+
+async function waitForBookPage(page) {
+  const book = page.getByRole("button", { name: /^(book|book now)$/i }).filter({ visible: true });
+  try {
+    await book.first().waitFor({ state: "visible", timeout: 15000 });
+  } catch {
+    throw new Error("The Book page did not open. Nothing was booked.");
+  }
+  log("checkout: Book page is open");
+}
+
+function searchField(page) {
+  return page
+    .getByPlaceholder(/search|user|player|name or email/i)
+    .or(page.getByRole("textbox", { name: /search|add user|user name|player/i }))
+    .or(page.getByRole("searchbox"));
+}
+
+function visibleSearchField(page) {
+  return searchField(page).filter({ visible: true });
+}
+
+async function nearestControl(page, name, section) {
+  const controls = page.getByRole("button", { name }).or(page.getByRole("radio", { name })).or(page.getByText(name));
+  const count = await controls.count();
   let best = null;
   for (let index = 0; index < count; index += 1) {
-    const button = buttons.nth(index);
-    if (!(await button.isVisible().catch(() => false))) continue;
-    const name = (await button.innerText()).replace(/\s+/g, " ").trim();
-    if (!name || isForbidden(name)) continue;
-    const rank = names.findIndex((pattern) => pattern.test(name));
-    if (rank === -1) continue;
-    if (!best || rank < best.rank) best = { button, name, rank };
+    const control = controls.nth(index);
+    if (!(await control.isVisible().catch(() => false))) continue;
+    const near = await control.evaluate((element, patternSource) => {
+      const pattern = new RegExp(patternSource, "i");
+      let scope = element;
+      for (let depth = 0; depth < 8 && scope; depth += 1) {
+        const text = (scope.innerText || "").replace(/\s+/g, " ").trim();
+        if (pattern.test(text)) return text.length;
+        scope = scope.parentElement;
+      }
+      return null;
+    }, section.source);
+    if (near == null) continue;
+    if (!best || near < best.near) best = { control, near };
   }
-  if (!best) return false;
-  await best.button.click();
-  log(`checkout: continued with "${best.name}"`);
-  return true;
+  return best?.control ?? null;
+}
+
+async function addButtonForPlayer(page) {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    const buttons = page.getByRole("button", { name: /^add$/i });
+    const count = await buttons.count();
+    let best = null;
+    for (let index = 0; index < count; index += 1) {
+      const button = buttons.nth(index);
+      if (!(await button.isVisible().catch(() => false))) continue;
+      const near = await button.evaluate((element, name) => {
+        let scope = element.parentElement;
+        for (let depth = 0; depth < 6 && scope; depth += 1) {
+          const text = (scope.innerText || "").replace(/\s+/g, " ");
+          if (text.toLowerCase().includes(name.toLowerCase())) return text.length;
+          scope = scope.parentElement;
+        }
+        return null;
+      }, SECOND_PLAYER);
+      if (near == null) continue;
+      if (!best || near < best.near) best = { button, near };
+    }
+    if (best) return best.button;
+    await page.waitForTimeout(200);
+  }
+  return null;
+}
+
+async function waitForPlayerOnList(page) {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (await nameOnPlayerList(page)) return true;
+    await page.waitForTimeout(200);
+  }
+  return false;
+}
+
+async function nameOnPlayerList(page) {
+  return page.evaluate((name) => {
+    const normalized = name.toLowerCase();
+    const visible = (node) => node.getClientRects().length > 0;
+    const textOf = (node) => (node.innerText || "").replace(/\s+/g, " ").trim();
+    const inSearchResult = (node) => {
+      let scope = node.parentElement;
+      for (let depth = 0; depth < 4 && scope && scope !== document.body; depth += 1) {
+        const hasSearch = [...scope.querySelectorAll("input, textarea, [role='searchbox']")].some(visible);
+        const hasAdd = [...scope.querySelectorAll("button")].some(
+          (button) => visible(button) && /^add$/i.test(textOf(button)),
+        );
+        if (hasSearch || hasAdd) return true;
+        scope = scope.parentElement;
+      }
+      return false;
+    };
+    return [...document.querySelectorAll("li, p, span, div, a")].some((node) => {
+      if (!visible(node) || inSearchResult(node)) return false;
+      if (node.querySelector("input, textarea, [role='searchbox']")) return false;
+      const text = textOf(node);
+      return text.length <= 80 && text.toLowerCase().includes(normalized);
+    });
+  }, SECOND_PLAYER);
+}
+
+async function firstVisible(locator) {
+  const count = await locator.count();
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index);
+    if (await item.isVisible().catch(() => false)) return item;
+  }
+  return null;
 }
 
 function isForbidden(name) {
@@ -344,11 +414,6 @@ function isForbidden(name) {
   return /^(book|book now|pay|pay now|confirm|confirm booking|confirm reservation|reserve|place order|complete booking|complete reservation|submit|submit payment)\b/i.test(
     name,
   );
-}
-
-function readPlayerCount(text) {
-  const match = text.match(/(\d+)\s+players?/i);
-  return match ? Number(match[1]) : null;
 }
 
 function dateHints(date) {
@@ -391,18 +456,6 @@ function normalizeText(value) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-async function bodyText(page) {
-  return page.locator("body").innerText();
-}
-
-async function visibleCount(locator) {
-  const count = await locator.count();
-  for (let index = 0; index < count; index += 1) {
-    if (await locator.nth(index).isVisible().catch(() => false)) return true;
-  }
-  return false;
 }
 
 async function clearAndScreenshot(page) {
