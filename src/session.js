@@ -11,9 +11,13 @@ export async function openSession(config, { fresh = false } = {}) {
   mkdirSync(dirname(STORAGE), { recursive: true });
   const hasStorage = !fresh && Boolean(await existingStorage());
   log(`openSession: launching chromium headless=${config.headless} reuseStorage=${hasStorage}`);
-  const browser = await chromium.launch({ headless: config.headless });
+  const browser = await chromium.launch({
+    headless: config.headless,
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,800"],
+  });
   const context = await browser.newContext({
     storageState: hasStorage ? STORAGE : undefined,
+    viewport: config.headless ? { width: 1280, height: 800 } : null,
     locale: "en-US",
     timezoneId: config.timeZone,
     userAgent:

@@ -1,13 +1,26 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { bookingUrlFromInput, lookupAvailability } from "./lookup.js";
+
+const NOVNC_PORT = 6080;
 
 const port = Number(process.env.SETTINGS_PORT || 8890);
 let busy = false;
 
 const server = createServer(async (req, res) => {
   try {
-    if (req.method === "GET") return send(res, 200, page("", "", null));
-    if (req.method !== "POST") return send(res, 404, "Not found");
+    const path = pathname(req.url);
+    if (path === "/live-view" || path === "/live-view/") {
+      res.writeHead(302, {
+        Location: "/live-view/vnc.html?autoconnect=1&resize=scale&path=live-view/websockify",
+      });
+      res.end();
+      return;
+    }
+    if (path.startsWith("/live-view/")) return proxyNovnc(req, res);
+    if (req.method === "GET" && (path === "/" || path === "/settings" || path === "/settings/")) {
+      return send(res, 200, page("", "", null));
+    }
+    if (req.method !== "POST" || (path !== "/" && path !== "/settings")) return send(res, 404, "Not found");
 
     const body = JSON.parse(await readBody(req));
     const bookingUrl = bookingUrlFromInput(body.bookingUrl);
@@ -26,9 +39,68 @@ const server = createServer(async (req, res) => {
   }
 });
 
+server.on("upgrade", (req, socket, head) => {
+  if (!pathname(req.url).startsWith("/live-view/")) {
+    socket.destroy();
+    return;
+  }
+  const proxy = httpRequest({
+    hostname: "127.0.0.1",
+    port: NOVNC_PORT,
+    path: stripLivePrefix(req.url),
+    method: "GET",
+    headers: { ...req.headers, host: `127.0.0.1:${NOVNC_PORT}` },
+  });
+  proxy.on("upgrade", (upstream, upstreamSocket, upstreamHead) => {
+    const lines = [`HTTP/1.1 ${upstream.statusCode} ${upstream.statusMessage}`];
+    for (const [key, value] of Object.entries(upstream.headers)) {
+      if (value == null) continue;
+      for (const item of Array.isArray(value) ? value : [value]) lines.push(`${key}: ${item}`);
+    }
+    socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+    if (upstreamHead?.length) socket.write(upstreamHead);
+    if (head?.length) upstreamSocket.write(head);
+    upstreamSocket.pipe(socket);
+    socket.pipe(upstreamSocket);
+  });
+  proxy.on("error", () => socket.destroy());
+  proxy.end();
+});
+
 server.listen(port, "0.0.0.0", () => {
   console.log(`Settings page listening on ${port}`);
 });
+
+function pathname(url) {
+  return new URL(url || "/", "http://localhost").pathname;
+}
+
+function stripLivePrefix(url) {
+  const parsed = new URL(url || "/", "http://localhost");
+  let path = parsed.pathname.replace(/^\/live-view/, "") || "/";
+  if (!path.startsWith("/")) path = `/${path}`;
+  return `${path}${parsed.search}`;
+}
+
+function proxyNovnc(req, res) {
+  const proxy = httpRequest(
+    {
+      hostname: "127.0.0.1",
+      port: NOVNC_PORT,
+      path: stripLivePrefix(req.url),
+      method: req.method,
+      headers: { ...req.headers, host: `127.0.0.1:${NOVNC_PORT}` },
+    },
+    (upstream) => {
+      res.writeHead(upstream.statusCode || 502, upstream.headers);
+      upstream.pipe(res);
+    },
+  );
+  proxy.on("error", () => {
+    if (!res.headersSent) send(res, 502, "Live view is not up yet. Restart the container and try again.");
+  });
+  req.pipe(proxy);
+}
 
 function page(bookingUrl, message, result) {
   const banner = message ? `<p class="banner">${escapeHtml(message)}</p>` : "";
@@ -52,6 +124,7 @@ function page(bookingUrl, message, result) {
 <body>
   <h1>Available courts</h1>
   <p>Paste a PlayByPoint booking link. The container uses the email and password already set in its environment.</p>
+  <p>If Cloudflare asks you to click a box, open <a href="/live-view">the live view</a> in another tab and click it there. Login cookies stay in the auth folder afterward.</p>
   ${banner}
   <form id="lookup">
     <label for="bookingUrl">Booking link</label>

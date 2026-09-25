@@ -7,7 +7,7 @@ services:
       - /path/to/el-tennis-booker/.env
     environment:
       - TZ=America/New_York
-      - HEADLESS=true
+      - HEADLESS=false
       - CONFIG_PATH=/app/config/booking.config.json
       - SETTINGS_PORT=8890
     volumes:
