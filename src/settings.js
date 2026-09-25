@@ -1,5 +1,6 @@
 import { createServer, request as httpRequest } from "node:http";
 import { bookingUrlFromInput, lookupAvailability } from "./lookup.js";
+import { closePreviewSession, previewCheckout } from "./checkout.js";
 
 const NOVNC_PORT = 6080;
 
@@ -7,6 +8,7 @@ const port = Number(process.env.SETTINGS_PORT || 8890);
 let busy = false;
 
 const server = createServer(async (req, res) => {
+  let bookingUrl = "";
   try {
     const path = pathname(req.url);
     if (path === "/live-view" || path === "/live-view/") {
@@ -23,10 +25,21 @@ const server = createServer(async (req, res) => {
     if (req.method !== "POST" || (path !== "/" && path !== "/settings")) return send(res, 404, "Not found");
 
     const body = JSON.parse(await readBody(req));
-    const bookingUrl = bookingUrlFromInput(body.bookingUrl);
+    bookingUrl = bookingUrlFromInput(body.bookingUrl);
     if (busy) return send(res, 200, page(bookingUrl, "Already checking a booking page. Wait for it to finish.", null));
     busy = true;
     try {
+      if (body.action === "checkout") {
+        const message = await previewCheckout({
+          bookingUrl,
+          date: body.date,
+          surface: body.surface,
+          seconds: body.seconds,
+          label: body.label,
+        });
+        return send(res, 200, page(bookingUrl, message, null));
+      }
+      await closePreviewSession();
       const result = await lookupAvailability(bookingUrl);
       return send(res, 200, page(bookingUrl, "", result));
     } finally {
@@ -34,7 +47,6 @@ const server = createServer(async (req, res) => {
     }
   } catch (error) {
     busy = false;
-    const bookingUrl = "";
     send(res, 200, page(bookingUrl, error.message, null));
   }
 });
@@ -118,7 +130,9 @@ function page(bookingUrl, message, result) {
     button { margin-top: 0.8rem; padding: 0.55rem 0.9rem; }
     .banner { background: #f4f4f4; padding: 0.7rem 0.8rem; }
     .day { margin-top: 1.2rem; }
-    .surface { margin: 0.3rem 0 0.6rem; }
+    .surface { margin: 0.7rem 0 0.25rem; }
+    .slots { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.2rem 0 0.6rem; }
+    .slot { margin-top: 0; }
   </style>
 </head>
 <body>
@@ -138,15 +152,32 @@ function page(bookingUrl, message, result) {
       const button = document.getElementById("go");
       button.disabled = true;
       button.textContent = "Signing in…";
+      await postAndReplace({ bookingUrl: event.currentTarget.bookingUrl.value });
+    });
+    for (const button of document.querySelectorAll(".slot")) {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.textContent = "Opening checkout…";
+        await postAndReplace({
+          action: "checkout",
+          bookingUrl: document.getElementById("bookingUrl").value,
+          date: button.dataset.date,
+          surface: button.dataset.surface,
+          seconds: Number(button.dataset.seconds),
+          label: button.dataset.label,
+        });
+      });
+    }
+    async function postAndReplace(body) {
       const response = await fetch(location.pathname || "/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bookingUrl: event.currentTarget.bookingUrl.value }),
+        body: JSON.stringify(body),
       });
       document.open();
       document.write(await response.text());
       document.close();
-    });
+    }
   </script>
 </body>
 </html>`;
@@ -157,15 +188,22 @@ function renderTimes(result) {
     .map((day) => {
       const surfaces = day.surfaces
         .map((surface) => {
-          const text = surface.ranges.length ? surface.ranges.join(", ") : "none open";
-          return `<p class="surface"><strong>${escapeHtml(surface.surface)}</strong> — ${escapeHtml(text)}</p>`;
+          const slots = surface.slots.length
+            ? `<div class="slots">${surface.slots
+                .map(
+                  (slot) =>
+                    `<button type="button" class="slot" data-date="${escapeHtml(day.date)}" data-surface="${escapeHtml(surface.surface)}" data-seconds="${Number(slot.seconds)}" data-label="${escapeHtml(slot.label)}">${escapeHtml(slot.label)}</button>`,
+                )
+                .join("")}</div>`
+            : `<p>none open</p>`;
+          return `<p class="surface"><strong>${escapeHtml(surface.surface)}</strong></p>${slots}`;
         })
         .join("");
       return `<section class="day"><h2>${escapeHtml(day.weekday)} ${escapeHtml(day.date)}</h2>${surfaces}</section>`;
     })
     .join("");
   const next = result.nextOpen ? `<p>Next booking window opens ${escapeHtml(result.nextOpen)}.</p>` : "";
-  return `<h2>Open times</h2><p>Facility ${escapeHtml(result.facilityId)}. Times are ${escapeHtml(result.timeZone)}.</p>${next}${days}`;
+  return `<h2>Open times</h2><p>Click one time to open checkout with Eric Placeholder as the second player. Nothing is booked.</p><p>Facility ${escapeHtml(result.facilityId)}. Times are ${escapeHtml(result.timeZone)}.</p>${next}${days}`;
 }
 
 function escapeHtml(value) {

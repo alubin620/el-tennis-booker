@@ -1,7 +1,7 @@
 import { openSession, ensureLoggedIn, readFacility } from "./session.js";
 import { listCourtTypes, listHours } from "./api.js";
 import { formatSeconds } from "./config.js";
-import { calendarDates, dateToUnix, normalizeHours, timeStepFrom } from "./match.js";
+import { calendarDates, dateToUnix, normalizeHours } from "./match.js";
 import { materializeStorageFromEnv } from "./storage-state.js";
 
 const DAYS = 3;
@@ -68,8 +68,7 @@ export async function lookupAvailability(bookingUrl) {
           kind: "reservation",
         });
         const hours = normalizeHours(payload);
-        const step = timeStepFrom(payload, facility.timeStep || 1800);
-        bySurface.push({ surface, ranges: openRanges(hours, step) });
+        bySurface.push({ surface, slots: openSlots(hours) });
       }
       days.push({ ...day, surfaces: bySurface });
     }
@@ -86,20 +85,12 @@ export async function lookupAvailability(bookingUrl) {
   }
 }
 
-function openRanges(hours, step) {
-  const open = hours.filter((hour) => hour.available).map((hour) => hour.seconds).sort((a, b) => a - b);
-  if (!open.length) return [];
-  const ranges = [];
-  let start = open[0];
-  let previous = open[0];
-  for (const seconds of open.slice(1)) {
-    if (seconds === previous + step) {
-      previous = seconds;
-      continue;
-    }
-    ranges.push(`${formatSeconds(start)}–${formatSeconds(previous + step)}`);
-    start = previous = seconds;
-  }
-  ranges.push(`${formatSeconds(start)}–${formatSeconds(previous + step)}`);
-  return ranges;
+export function openSlots(hours) {
+  return hours
+    .filter((hour) => hour.available)
+    .map((hour) => ({
+      seconds: hour.seconds,
+      label: hour.label || formatSeconds(hour.seconds),
+    }))
+    .sort((a, b) => a.seconds - b.seconds);
 }

@@ -8,5 +8,6 @@ logs/
 challenge.png
 sign-in-missing.png
 login-failed.png
+checkout-stopped.png
 *.log
 .tmp-*
