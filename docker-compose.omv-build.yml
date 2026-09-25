@@ -1,0 +1,24 @@
+---
+# Use this if ghcr.io pull stays "unauthorized".
+# On the NAS once:
+#   git clone https://github.com/alubin620/el-tennis-booker.git /path/to/el-tennis-booker/repo
+# Then deploy THIS compose file (builds locally, no GHCR).
+
+services:
+  el-tennis-booker:
+    build: /path/to/el-tennis-booker/repo
+    container_name: el-tennis-booker
+    env_file:
+      - /path/to/el-tennis-booker/.env
+    environment:
+      - TZ=America/New_York
+      - HEADLESS=true
+      - CONFIG_PATH=/app/config/booking.config.json
+      - SETTINGS_PORT=8890
+    volumes:
+      - /path/to/el-tennis-booker/config:/app/config
+      - /path/to/el-tennis-booker/auth:/app/.auth
+    ports:
+      - "8890:8890"
+    restart: unless-stopped
+    command: ["sh", "-c", "node src/settings.js & exec node src/index.js watch"]

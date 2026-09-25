@@ -1,0 +1,12 @@
+node_modules
+.env
+booking.config.json
+.auth
+README.md
+logs/
+.DS_Store
+challenge.png
+sign-in-missing.png
+login-failed.png
+*.log
+.tmp-*

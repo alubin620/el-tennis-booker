@@ -1,0 +1,55 @@
+name: Check courts
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 30 minutes. GitHub cron is UTC and can start late.
+    - cron: "*/30 * * * *"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare config
+        run: cp booking.config.example.json booking.config.json
+
+      - name: Require PlayByPoint secrets
+        env:
+          PBP_EMAIL: ${{ secrets.PBP_EMAIL }}
+          PBP_PASSWORD: ${{ secrets.PBP_PASSWORD }}
+        run: |
+          test -n "$PBP_EMAIL" || { echo "Add repository secret PBP_EMAIL"; exit 1; }
+          test -n "$PBP_PASSWORD" || { echo "Add repository secret PBP_PASSWORD"; exit 1; }
+
+      - name: Look for a court
+        env:
+          PBP_EMAIL: ${{ secrets.PBP_EMAIL }}
+          PBP_PASSWORD: ${{ secrets.PBP_PASSWORD }}
+          PBP_STORAGE_STATE: ${{ secrets.PBP_STORAGE_STATE }}
+          HEADLESS: "true"
+          PBP_VERBOSE: "1"
+        run: node src/index.js once
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts
+          path: |
+            challenge.png
+            sign-in-missing.png
+            login-failed.png
+          if-no-files-found: ignore

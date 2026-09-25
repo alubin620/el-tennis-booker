@@ -1,0 +1,46 @@
+# OpenMediaVault / Portainer: deploy this whole file as a stack.
+# Set PBP_EMAIL and PBP_PASSWORD in the stack Environment (or a .env file next to this compose).
+# Court preferences are saved from the settings page into ./config/booking.config.json.
+
+services:
+  booker:
+    build: .
+    container_name: el-tennis-booker
+    env_file:
+      - .env
+    environment:
+      TZ: America/New_York
+      HEADLESS: "true"
+      PBP_VERBOSE: "1"
+      CONFIG_PATH: /app/config/booking.config.json
+    volumes:
+      - ./config:/app/config
+      - ./.auth:/app/.auth
+    restart: unless-stopped
+    command: ["node", "src/index.js", "watch"]
+
+  settings:
+    build: .
+    container_name: el-tennis-booker-settings
+    environment:
+      CONFIG_PATH: /app/config/booking.config.json
+      SETTINGS_PORT: "8890"
+    volumes:
+      - ./config:/app/config
+    ports:
+      - "${SETTINGS_PORT:-8890}:8890"
+    restart: unless-stopped
+    command: ["node", "src/settings.js"]
+
+  # Web UI: open http://<your-nas-ip>:8888 to watch booker logs (optional; remove if unused)
+  logs:
+    image: amir20/dozzle:v8.14.7
+    container_name: el-tennis-booker-logs
+    restart: unless-stopped
+    ports:
+      - "${DOZZLE_PORT:-8888}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_FILTER: "name=el-tennis-booker"
+      DOZZLE_LEVEL: info

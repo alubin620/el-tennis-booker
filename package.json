@@ -1,0 +1,22 @@
+{
+  "name": "el-tennis-booking",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Watch court times and book a matching slot.",
+  "scripts": {
+    "login": "node src/index.js login",
+    "check": "node src/index.js check",
+    "once": "node src/index.js once",
+    "export-session": "node src/index.js export-session",
+    "settings": "node src/settings.js",
+    "watch": "node src/index.js watch",
+    "book": "node src/index.js book"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.55.1"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "facilitySlug": "",
+  "facilityId": null,
+  "timeZone": "",
+  "kind": "reservation",
+  "surface": "",
+  "players": null,
+  "paymentMethod": "",
+  "dryRun": true,
+  "pollIntervalSeconds": 20,
+  "daysAhead": null,
+  "slots": []
+}

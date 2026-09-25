@@ -1,0 +1,21 @@
+---
+services:
+  el-tennis-booker:
+    image: ghcr.io/alubin620/el-tennis-booker:latest
+    container_name: el-tennis-booker
+    env_file:
+      - /path/to/el-tennis-booker/.env
+    environment:
+      - TZ=America/New_York
+      - HEADLESS=true
+      - CONFIG_PATH=/app/config/booking.config.json
+      - SETTINGS_PORT=8890
+    volumes:
+      - /path/to/el-tennis-booker/config:/app/config
+      - /path/to/el-tennis-booker/auth:/app/.auth
+      # JavaScript from git. After `git pull` in repo/, restart the container. No image rebuild.
+      - /path/to/el-tennis-booker/repo/src:/app/src:ro
+    ports:
+      - "8890:8890"
+    restart: unless-stopped
+    command: ["sh", "-c", "node src/settings.js & exec node src/index.js watch"]

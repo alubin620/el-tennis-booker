@@ -1,0 +1,22 @@
+---
+description: Keep personal identity and booking details out of the repo
+alwaysApply: true
+---
+
+# No personal data in the repo
+
+Court preferences and identity stay off GitHub. Put club, times, and login only in gitignored local files or the settings page (`npm run settings`, port 8890), which writes `booking.config.json`.
+
+Never add or commit:
+
+- A real name, personal email, machine hostname, or `Co-authored-by` trailer
+- Facility slug, facility id, club name, surface, player count, payment method, or preferred slots
+- NAS disk UUIDs or `/srv/dev-disk-by-uuid-...` paths
+
+Use placeholders in tracked files: `/path/to/el-tennis-booker`, empty `booking.config.example.json`. Do not fall back to a real club in code.
+
+These stay gitignored: `README.md`, `logs/`, `.env`, `booking.config.json`, `.auth`, screenshots.
+
+When committing, author and committer must be `alubin620 <alubin620@users.noreply.github.com>`. Set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` on the commit command. If a trailer adds another author, rewrite that commit with `git commit-tree` before pushing. Never push a commit whose author is not `alubin620`.
+
+Logs may say whether email and password are set, never their values or lengths. Clear `#user_email` and `#user_password` before any screenshot, and do not log the signed-in display name.
