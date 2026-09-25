@@ -1,7 +1,8 @@
 import { openSession, ensureLoggedIn, readFacility } from "./session.js";
 import { listCourtTypes, listHours } from "./api.js";
-import { formatSeconds } from "./config.js";
-import { calendarDates, dateToUnix, normalizeHours } from "./match.js";
+import { calendarDates, dateToUnix, normalizeHours, timeStepFrom } from "./match.js";
+import { labelForSlot, readTimeButtonTexts, selectDate, selectSurface } from "./checkout.js";
+import { log } from "./logger.js";
 import { materializeStorageFromEnv } from "./storage-state.js";
 
 const DAYS = 3;
@@ -68,7 +69,9 @@ export async function lookupAvailability(bookingUrl) {
           kind: "reservation",
         });
         const hours = normalizeHours(payload);
-        bySurface.push({ surface, slots: openSlots(hours) });
+        const step = timeStepFrom(payload, facility.timeStep || 1800);
+        const buttonTexts = await timeButtonsFor(session.page, day.date, surface);
+        bySurface.push({ surface, slots: openSlots(hours, step, buttonTexts) });
       }
       days.push({ ...day, surfaces: bySurface });
     }
@@ -85,12 +88,24 @@ export async function lookupAvailability(bookingUrl) {
   }
 }
 
-export function openSlots(hours) {
+export function openSlots(hours, step = 3600, buttonTexts = []) {
   return hours
     .filter((hour) => hour.available)
-    .map((hour) => ({
-      seconds: hour.seconds,
-      label: hour.label || formatSeconds(hour.seconds),
-    }))
+    .map((hour) => {
+      const chosen = labelForSlot(hour.seconds, step, buttonTexts, hour.label);
+      return { seconds: hour.seconds, endSeconds: chosen.endSeconds, label: chosen.label };
+    })
     .sort((a, b) => a.seconds - b.seconds);
+}
+
+async function timeButtonsFor(page, date, surface) {
+  try {
+    await selectDate(page, date);
+    await selectSurface(page, surface);
+    await page.waitForTimeout(700);
+    return await readTimeButtonTexts(page);
+  } catch (error) {
+    log("lookup: keeping the hour label because the booking controls were not clicked");
+    return [];
+  }
 }

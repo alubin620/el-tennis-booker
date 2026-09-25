@@ -1,5 +1,4 @@
 import { openSession, ensureLoggedIn } from "./session.js";
-import { formatSeconds } from "./config.js";
 import { log } from "./logger.js";
 import { materializeStorageFromEnv } from "./storage-state.js";
 
@@ -60,7 +59,7 @@ export async function previewCheckout({ bookingUrl, date, surface, seconds, labe
       date: String(date),
       surface: String(surface).trim(),
       seconds: start,
-      label: label || formatClock12(start),
+      label: String(label || "").trim(),
     });
     log("checkout: stopped on the checkout page without booking");
     return `Checkout is open and nothing was booked. ${SECOND_PLAYER} was added as the second player. Open the live view to see it. Do not click Book or Pay.`;
@@ -103,7 +102,61 @@ async function driveToCheckout(page, { date, surface, seconds, label }) {
   }
 }
 
-async function selectDate(page, date) {
+export function clocksFromLabel(text) {
+  const clocks = [];
+  const source = String(text || "");
+  const pattern = /\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b|\b([01]?\d|2[0-3]):([0-5]\d)\b/gi;
+  for (const match of source.matchAll(pattern)) {
+    if (match[3]) {
+      let hour = Number(match[1]);
+      const minutes = Number(match[2] || 0);
+      const meridiem = match[3].replaceAll(".", "").toLowerCase();
+      if (hour > 12 || minutes > 59) continue;
+      if (meridiem.startsWith("p") && hour < 12) hour += 12;
+      if (meridiem.startsWith("a") && hour === 12) hour = 0;
+      clocks.push(hour * 3600 + minutes * 60);
+      continue;
+    }
+    clocks.push(Number(match[4]) * 3600 + Number(match[5]) * 60);
+  }
+  return clocks;
+}
+
+export function labelForSlot(seconds, step, buttonTexts, apiLabel) {
+  const end = seconds + step;
+  let best = null;
+  for (const raw of buttonTexts) {
+    const text = String(raw || "").replace(/\s+/g, " ").trim();
+    const clocks = clocksFromLabel(text);
+    if (!clocks.length || clocks[0] !== seconds) continue;
+    if (clocks.length >= 2 && clocks[1] !== end) continue;
+    const score = clocks.length * 1000 + text.length;
+    if (!best || score < best.score) best = { text, clocks, score };
+  }
+  if (best) return { label: best.text, endSeconds: best.clocks[1] ?? end };
+
+  const fallback = String(apiLabel || "").replace(/\s+/g, " ").trim();
+  const fallbackClocks = clocksFromLabel(fallback);
+  if (fallback && fallbackClocks[0] === seconds) {
+    return { label: fallback, endSeconds: fallbackClocks[1] ?? end };
+  }
+  return { label: rangeLabel12(seconds, end), endSeconds: end };
+}
+
+export async function readTimeButtonTexts(page) {
+  const nodes = page.locator("button, a, [role='button'], li");
+  const count = await nodes.count();
+  const texts = [];
+  for (let index = 0; index < count; index += 1) {
+    const node = nodes.nth(index);
+    if (!(await node.isVisible().catch(() => false))) continue;
+    const text = (await node.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    if (text && clocksFromLabel(text).length) texts.push(text);
+  }
+  return texts;
+}
+
+export async function selectDate(page, date) {
   const hints = dateHints(date);
   const byData = page.locator(`[data-date="${date}"], [data-value="${date}"]`);
   if (await byData.count()) {
@@ -112,7 +165,10 @@ async function selectDate(page, date) {
     return;
   }
   const labeled = page.getByRole("button", {
-    name: new RegExp(`${hints.monthName}\\s+${hints.day}\\b|${hints.weekday}.*\\b${hints.day}\\b`, "i"),
+    name: new RegExp(
+      `${hints.monthName}\\s+${hints.day}\\b|${hints.weekdayLong}.*\\b${hints.day}\\b|${hints.weekday}.*\\b${hints.day}\\b`,
+      "i",
+    ),
   });
   if (await labeled.count()) {
     await labeled.first().click();
@@ -122,24 +178,23 @@ async function selectDate(page, date) {
   const buttons = page.getByRole("button");
   const count = await buttons.count();
   for (let index = 0; index < count; index += 1) {
-    const text = (await buttons.nth(index).innerText()).replace(/\s+/g, " ");
+    const button = buttons.nth(index);
+    if (!(await button.isVisible().catch(() => false))) continue;
+    const text = (await button.innerText()).replace(/\s+/g, " ");
     const hasDay = new RegExp(`\\b${hints.day}\\b`).test(text);
-    const hasWeekday = text.toLowerCase().includes(hints.weekday.toLowerCase());
-    if (hasDay && hasWeekday) {
-      await buttons.nth(index).click();
+    const folded = text.toLowerCase();
+    const hasWeekday = folded.includes(hints.weekday.toLowerCase()) || folded.includes(hints.weekdayLong.toLowerCase());
+    const hasMonth = folded.includes(hints.monthName.toLowerCase());
+    if (hasDay && (hasWeekday || hasMonth)) {
+      await button.click();
       log("checkout: selected date");
       return;
     }
   }
-  const body = await bodyText(page);
-  if (body.includes(date) || (body.includes(hints.monthName) && new RegExp(`\\b${hints.day}\\b`).test(body))) {
-    log("checkout: date already shown");
-    return;
-  }
   throw new Error(`Could not select ${date} on the booking page. Nothing was booked.`);
 }
 
-async function selectSurface(page, surface) {
+export async function selectSurface(page, surface) {
   const pattern = new RegExp(`^${escapeRegex(surface)}$`, "i");
   const target = page
     .getByRole("tab", { name: pattern })
@@ -160,23 +215,34 @@ async function selectSurface(page, surface) {
 }
 
 async function selectTime(page, label, seconds) {
-  const candidates = [...new Set([label, formatClock12(seconds), formatSeconds(seconds)].filter(Boolean))];
-  for (const text of candidates) {
-    const exact = page.getByRole("button", { name: text, exact: true });
-    if (await exact.count()) {
-      await exact.first().click();
-      log("checkout: selected time");
-      return;
+  const wanted = clocksFromLabel(label);
+  const start = wanted[0] ?? seconds;
+  const end = wanted[1] ?? null;
+  const wantedText = normalizeText(label);
+  const nodes = page.locator("button, a, [role='button'], li");
+  const count = await nodes.count();
+  let best = null;
+  for (let index = 0; index < count; index += 1) {
+    const node = nodes.nth(index);
+    if (!(await node.isVisible().catch(() => false))) continue;
+    const text = normalizeText(await node.innerText().catch(() => ""));
+    if (!text || isForbidden(text)) continue;
+    if (wantedText && text === wantedText) {
+      best = { node, score: -1 };
+      break;
     }
-    const pattern = new RegExp(`^\\s*${escapeRegex(text)}\\s*$`);
-    const node = page.locator("button, a, [role='button'], li").filter({ hasText: pattern });
-    if (await node.count()) {
-      await node.first().click();
-      log("checkout: selected time");
-      return;
-    }
+    const clocks = clocksFromLabel(text);
+    if (!clocks.length || clocks[0] !== start) continue;
+    if (end != null && clocks.length >= 2 && clocks[1] !== end) continue;
+    const score = (end != null && clocks[1] === end ? 0 : 100) + text.length;
+    if (!best || score < best.score) best = { node, text, score };
   }
-  throw new Error(`Could not find ${candidates[0]} on the booking page. Nothing was booked.`);
+  if (!best) {
+    const shown = label || rangeLabel12(start, start);
+    throw new Error(`Could not find ${shown} on the booking page. Nothing was booked.`);
+  }
+  await best.node.click();
+  log(`checkout: selected time ${best.text || label}`);
 }
 
 async function acceptWaiverIfPresent(page) {
@@ -292,16 +358,25 @@ function dateHints(date) {
   return {
     day: String(day),
     weekday: new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short" }).format(utc),
+    weekdayLong: new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long" }).format(utc),
     monthName: new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "long" }).format(utc),
   };
 }
 
-function formatClock12(seconds) {
+function rangeLabel12(start, end) {
+  return `${clock12(start)} – ${clock12(end)}`;
+}
+
+function clock12(seconds) {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const suffix = hours >= 12 ? "PM" : "AM";
   const hour12 = hours % 12 || 12;
   return `${hour12}:${String(minutes).padStart(2, "0")} ${suffix}`;
+}
+
+function normalizeText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function escapeRegex(value) {
