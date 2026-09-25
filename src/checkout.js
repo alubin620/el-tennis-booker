@@ -296,17 +296,20 @@ async function typeAndAddPlayer(page) {
 }
 
 async function clickEnabledNext(page) {
-  const deadline = Date.now() + 15000;
+  const buttons = page.locator(".content.active button").filter({ hasText: /^\s*next\s*$/i });
+  const deadline = Date.now() + 8000;
+  let target = null;
   while (Date.now() < deadline) {
-    const next = await firstEnabled(page.getByRole("button", { name: /^\s*next\s*$/i }));
-    if (next) {
-      await next.click();
-      log("checkout: continued with Next");
-      return;
+    target = await firstVisible(buttons);
+    if (target) {
+      const blocked = await target.evaluate((element) => element.classList.contains("disabled")).catch(() => false);
+      if (!blocked) break;
     }
     await page.waitForTimeout(200);
   }
-  throw new Error("Could not find Next. Nothing was booked.");
+  if (!target) throw new Error("Could not find Next. Nothing was booked.");
+  await target.click({ force: true });
+  log("checkout: continued with Next");
 }
 
 async function waitForBookPage(page) {
@@ -398,24 +401,6 @@ async function firstVisible(locator) {
   for (let index = 0; index < count; index += 1) {
     const item = locator.nth(index);
     if (await item.isVisible().catch(() => false)) return item;
-  }
-  return null;
-}
-
-async function firstEnabled(locator) {
-  const count = await locator.count();
-  for (let index = 0; index < count; index += 1) {
-    const item = locator.nth(index);
-    if (!(await item.isVisible().catch(() => false))) continue;
-    const disabled = await item
-      .evaluate(
-        (element) =>
-          element.classList.contains("disabled") ||
-          element.hasAttribute("disabled") ||
-          element.getAttribute("aria-disabled") === "true",
-      )
-      .catch(() => true);
-    if (!disabled) return item;
   }
   return null;
 }
